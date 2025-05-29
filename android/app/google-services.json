@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "501638073379",
+    "project_id": "produkty-logowanie",
+    "storage_bucket": "produkty-logowanie.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:501638073379:android:7d2c70f365d4f3ed07f596",
+        "android_client_info": {
+          "package_name": "com.example.flutter_application_2"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCVKXCZxdyhqCIGXgyNAcmi5H_ntfYWzao"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
