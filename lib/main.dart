@@ -3,8 +3,15 @@ import 'package:http/http.dart' as http;
 import 'package:csv/csv.dart';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'firebase_options.dart'; // Wygenerowany przez flutterfire configure
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
   runApp(const MyApp());
 }
 
@@ -14,16 +21,111 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Produkty',
-      theme: ThemeData(
-        primarySwatch: Colors.green,
-        visualDensity: VisualDensity.adaptivePlatformDensity,
-      ),
-      home: const ProductListPage(),
+      title: 'Moja Aplikacja',
+      theme: ThemeData(primarySwatch: Colors.blue),
+      home: const AuthWrapper(),
     );
   }
 }
 
+// Warstwa sprawdzająca stan logowania
+class AuthWrapper extends StatelessWidget {
+  const AuthWrapper({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasData) {
+          User? user = snapshot.data;
+          if (user != null && user.emailVerified) {
+            return const ProductListPage(); // Kieruje do listy produktów po zalogowaniu
+          } else {
+            return const LoginScreen();
+          }
+        }
+        return const LoginScreen();
+      },
+    );
+  }
+}
+
+// Ekran logowania
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  _LoginScreenState createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  String? _errorMessage;
+
+  Future<void> _signIn() async {
+    try {
+      UserCredential userCredential = await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+      );
+      if (!userCredential.user!.emailVerified) {
+        await userCredential.user!.sendEmailVerification();
+        setState(() {
+          _errorMessage = 'Proszę zweryfikować email. Wysłano link weryfikacyjny.';
+        });
+        await FirebaseAuth.instance.signOut();
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Błąd logowania: ${e.toString()}';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Logowanie')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            TextField(
+              controller: _emailController,
+              decoration: const InputDecoration(labelText: 'Email'),
+              keyboardType: TextInputType.emailAddress,
+            ),
+            TextField(
+              controller: _passwordController,
+              decoration: const InputDecoration(labelText: 'Hasło'),
+              obscureText: true,
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _signIn,
+              child: const Text('Zaloguj się'),
+            ),
+            if (_errorMessage != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 16.0),
+                child: Text(
+                  _errorMessage!,
+                  style: const TextStyle(color: Colors.red),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Ekran listy produktów
 class ProductListPage extends StatefulWidget {
   const ProductListPage({super.key});
 
@@ -52,7 +154,6 @@ class _ProductListPageState extends State<ProductListPage> {
     _fetchCsvData();
   }
 
-  // Ładowanie danych z pamięci podręcznej
   Future<void> _loadCachedData() async {
     final prefs = await SharedPreferences.getInstance();
     final cachedData = prefs.getString('cached_products');
@@ -68,7 +169,6 @@ class _ProductListPageState extends State<ProductListPage> {
     }
   }
 
-  // Pobieranie danych z CSV
   Future<void> _fetchCsvData() async {
     setState(() {
       _isLoading = true;
@@ -88,7 +188,6 @@ class _ProductListPageState extends State<ProductListPage> {
           utf8.decode(response.bodyBytes),
         );
 
-        // Zapis do pamięci podręcznej
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('cached_products', response.body);
 
@@ -111,7 +210,6 @@ class _ProductListPageState extends State<ProductListPage> {
     }
   }
 
-  // Sortowanie produktów (alfabetyczne po Cenniku)
   void _sortProducts(int columnIndex) {
     setState(() {
       _sortColumnIndex = columnIndex;
@@ -125,7 +223,6 @@ class _ProductListPageState extends State<ProductListPage> {
     });
   }
 
-  // Filtrowanie i wyszukiwanie
   void _applyFiltersAndSearch() {
     setState(() {
       _filteredProducts = _products.where((product) {
@@ -164,7 +261,6 @@ class _ProductListPageState extends State<ProductListPage> {
       ),
       body: Column(
         children: [
-          // Wyszukiwanie
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: TextField(
@@ -179,7 +275,6 @@ class _ProductListPageState extends State<ProductListPage> {
               },
             ),
           ),
-          // Filtrowanie po Cenniku
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8.0),
             child: DropdownButton<String>(
@@ -202,7 +297,6 @@ class _ProductListPageState extends State<ProductListPage> {
               },
             ),
           ),
-          // Lista produktów
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
