@@ -1,5 +1,7 @@
 {
   "projects": {
     "default": "produkty-logowanie"
-  }
+  },
+  "targets": {},
+  "etags": {}
 }
