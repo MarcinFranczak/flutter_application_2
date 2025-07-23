@@ -5,7 +5,10 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:logger/logger.dart';
 import 'firebase_options.dart'; // Wygenerowany przez flutterfire configure
+
+final logger = Logger();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,7 +31,6 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// Warstwa sprawdzająca stan logowania
 class AuthWrapper extends StatelessWidget {
   const AuthWrapper({super.key});
 
@@ -38,12 +40,12 @@ class AuthWrapper extends StatelessWidget {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
         if (snapshot.hasData) {
           User? user = snapshot.data;
           if (user != null && user.emailVerified) {
-            return const ProductListPage(); // Kieruje do listy produktów po zalogowaniu
+            return const ProductListPage();
           } else {
             return const LoginScreen();
           }
@@ -54,12 +56,11 @@ class AuthWrapper extends StatelessWidget {
   }
 }
 
-// Ekran logowania
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
   @override
-  _LoginScreenState createState() => _LoginScreenState();
+  State<LoginScreen> createState() => _LoginScreenState();
 }
 
 class _LoginScreenState extends State<LoginScreen> {
@@ -68,6 +69,10 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _errorMessage;
 
   Future<void> _signIn() async {
+    if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
+      setState(() => _errorMessage = 'Wypełnij wszystkie pola.');
+      return;
+    }
     try {
       UserCredential userCredential = await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: _emailController.text.trim(),
@@ -85,6 +90,13 @@ class _LoginScreenState extends State<LoginScreen> {
         _errorMessage = 'Błąd logowania: ${e.toString()}';
       });
     }
+  }
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
   }
 
   @override
@@ -125,7 +137,6 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-// Ekran listy produktów
 class ProductListPage extends StatefulWidget {
   const ProductListPage({super.key});
 
@@ -134,14 +145,14 @@ class ProductListPage extends StatefulWidget {
 }
 
 class _ProductListPageState extends State<ProductListPage> {
-  List<List<dynamic>> _products = [];
-  List<List<dynamic>> _filteredProducts = [];
-  bool _isLoading = false;
+  final List<List<dynamic>> _products = [];
+  final List<List<dynamic>> _filteredProducts = [];
+  bool _isLoading = true;
   bool _sortAscending = true;
   int _sortColumnIndex = 3; // Sortowanie po kolumnie Cennik
   String _searchQuery = '';
   String? _selectedCennik;
-  List<String> _cennikOptions = [];
+  final List<String> _cennikOptions = [];
   String? _errorMessage;
 
   final String csvUrl =
@@ -159,53 +170,48 @@ class _ProductListPageState extends State<ProductListPage> {
     final cachedData = prefs.getString('cached_products');
     if (cachedData != null) {
       final csvBody = const CsvToListConverter().convert(cachedData);
-      setState(() {
-        _products = List.from(csvBody.sublist(1));
-        _filteredProducts = List.from(_products);
-        _cennikOptions = _products.map((p) => p[3].toString()).toSet().toList();
-        _sortProducts(_sortColumnIndex);
-        _isLoading = false;
-      });
+      _processCsvData(csvBody);
     }
   }
 
-  Future<void> _fetchCsvData() async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
-
+  Future<void> _fetchCsvData({int limit = 100}) async {
+    setState(() => _isLoading = true);
     try {
       final response = await http.get(Uri.parse(csvUrl)).timeout(
         const Duration(seconds: 10),
-        onTimeout: () {
-          throw Exception('Przekroczono czas oczekiwania na odpowiedź serwera');
-        },
+        onTimeout: () => throw Exception('Przekroczono czas oczekiwania na odpowiedź serwera'),
       );
-
       if (response.statusCode == 200) {
-        final csvBody = const CsvToListConverter().convert(
-          utf8.decode(response.bodyBytes),
-        );
-
+        final csvBody = const CsvToListConverter().convert(utf8.decode(response.bodyBytes))
+            .sublist(1)
+            .take(limit)
+            .toList();
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('cached_products', response.body);
-
-        setState(() {
-          _products = List.from(csvBody.sublist(1));
-          _filteredProducts = List.from(_products);
-          _cennikOptions = _products.map((p) => p[3].toString()).toSet().toList();
-          _sortProducts(_sortColumnIndex);
-          _applyFiltersAndSearch();
-          _isLoading = false;
-        });
+        _processCsvData(csvBody);
       } else {
         throw Exception('Błąd pobierania danych: ${response.statusCode}');
       }
     } catch (e) {
       setState(() {
-        _isLoading = false;
         _errorMessage = 'Błąd: ${e.toString()}';
+      });
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  void _processCsvData(List<List<dynamic>> csvBody) {
+    if (mounted) {
+      setState(() {
+        _products.clear();
+        _products.addAll(csvBody);
+        _filteredProducts.clear();
+        _filteredProducts.addAll(_products);
+        _cennikOptions.clear();
+        _cennikOptions.addAll(_products.map((p) => p[3]?.toString() ?? '').toSet());
+        _sortProducts(_sortColumnIndex);
+        _applyFiltersAndSearch();
       });
     }
   }
@@ -214,24 +220,23 @@ class _ProductListPageState extends State<ProductListPage> {
     setState(() {
       _sortColumnIndex = columnIndex;
       _filteredProducts.sort((a, b) {
-        final valueA = a[columnIndex].toString();
-        final valueB = b[columnIndex].toString();
-        return _sortAscending
-            ? valueA.compareTo(valueB)
-            : valueB.compareTo(valueA);
+        final valueA = a[columnIndex]?.toString() ?? '';
+        final valueB = b[columnIndex]?.toString() ?? '';
+        return _sortAscending ? valueA.compareTo(valueB) : valueB.compareTo(valueA);
       });
     });
   }
 
   void _applyFiltersAndSearch() {
     setState(() {
-      _filteredProducts = _products.where((product) {
-        final matchesCennik = _selectedCennik == null || product[3] == _selectedCennik;
+      _filteredProducts.clear();
+      _filteredProducts.addAll(_products.where((product) {
+        final matchesCennik = _selectedCennik == null || product[3]?.toString() == _selectedCennik;
         final matchesSearch = _searchQuery.isEmpty ||
-            product[1].toString().toLowerCase().contains(_searchQuery.toLowerCase()) ||
-            product[3].toString().toLowerCase().contains(_searchQuery.toLowerCase());
+            (product[1]?.toString().toLowerCase().contains(_searchQuery.toLowerCase()) ?? false) ||
+            (product[3]?.toString().toLowerCase().contains(_searchQuery.toLowerCase()) ?? false);
         return matchesCennik && matchesSearch;
-      }).toList();
+      }));
       _sortProducts(_sortColumnIndex);
     });
   }
@@ -242,6 +247,16 @@ class _ProductListPageState extends State<ProductListPage> {
       appBar: AppBar(
         title: const Text('Lista Produktów'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              await FirebaseAuth.instance.signOut();
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.remove('cached_products');
+              if (mounted) setState(() {});
+            },
+            tooltip: 'Wyloguj się',
+          ),
           IconButton(
             icon: Icon(_sortAscending ? Icons.arrow_upward : Icons.arrow_downward),
             onPressed: () {
@@ -304,17 +319,21 @@ class _ProductListPageState extends State<ProductListPage> {
                     ? Center(child: Text(_errorMessage!))
                     : _filteredProducts.isEmpty
                         ? const Center(child: Text('Brak produktów do wyświetlenia'))
-                        : ListView.builder(
+                        : ListView.separated(
                             itemCount: _filteredProducts.length,
+                            separatorBuilder: (context, index) => const Divider(),
                             itemBuilder: (context, index) {
                               final product = _filteredProducts[index];
                               final stockString = product[5]?.toString() ?? '0';
                               final stock = double.tryParse(stockString.replaceAll(',', '.')) ?? 0;
+                              if (stock.isNaN) {
+                                logger.w('Błąd parsowania stock dla produktu ${product[1]}');
+                              }
                               return Card(
                                 margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                 child: ListTile(
                                   title: Text(
-                                    product[1].toString(),
+                                    product[1]?.toString() ?? 'Brak nazwy',
                                     style: const TextStyle(fontWeight: FontWeight.bold),
                                   ),
                                   subtitle: Text('Kod: ${product[2]} | Cennik: ${product[3]}'),
@@ -323,16 +342,16 @@ class _ProductListPageState extends State<ProductListPage> {
                                     children: [
                                       Text(
                                         'ID: ${product[0]}',
-                                        style: TextStyle(
-                                          color: Colors.green[800],
+                                        style: const TextStyle(
+                                          color: Colors.green,
                                           fontSize: 12,
                                           fontWeight: FontWeight.bold,
                                         ),
                                       ),
                                       Text(
                                         stock > 0 ? 'Stan: ${product[5]} m²' : 'Chwilowo brak',
-                                        style: TextStyle(
-                                          color: Colors.green[800],
+                                        style: const TextStyle(
+                                          color: Colors.green,
                                           fontSize: 16,
                                           fontWeight: FontWeight.bold,
                                         ),
