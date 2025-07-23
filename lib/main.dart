@@ -338,8 +338,8 @@ class _ProductListPageState extends State<ProductListPage> {
     required VoidCallback onSuccess,
     required VoidCallback onError,
   }) async {
-    const username = 'twojlogin@gmail.com';
-    const password = 'twoje_haslo_aplikacji'; // Zastąp hasłem aplikacji Gmail
+    const username = 'paulina.jarmuzek.fachowiec@gmail.com';
+    const password = 'upvmohztwbdnflhp'; // Zastąp hasłem aplikacji Gmail
     final smtpServer = gmail(username, password);
 
     final message = Message()
