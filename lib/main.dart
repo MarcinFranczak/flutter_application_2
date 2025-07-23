@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:csv/csv.dart';
@@ -6,6 +7,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:logger/logger.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:mailer/mailer.dart';
+import 'package:mailer/smtp_server.dart';
 import 'firebase_options.dart'; // Wygenerowany przez flutterfire configure
 
 final logger = Logger();
@@ -137,6 +141,14 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
+class Produkt {
+  final String nazwa;
+  final String kod;
+  final double stan;
+
+  Produkt({required this.nazwa, required this.kod, required this.stan});
+}
+
 class ProductListPage extends StatefulWidget {
   const ProductListPage({super.key});
 
@@ -241,6 +253,112 @@ class _ProductListPageState extends State<ProductListPage> {
     });
   }
 
+  void zamowProdukt(BuildContext context, Produkt produkt) async {
+    final controller = TextEditingController();
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Zaloguj się, aby złożyć zamówienie.')));
+      return;
+    }
+
+    await showDialog(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Text('Zamów: ${produkt.nazwa}'),
+          content: TextField(
+            controller: controller,
+            keyboardType: TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(labelText: 'Ilość (max: ${produkt.stan.toStringAsFixed(2)} m²)'),
+            onChanged: (value) => setDialogState(() {}),
+          ),
+          actions: [
+            TextButton(
+              child: const Text('Anuluj'),
+              onPressed: () => Navigator.of(dialogContext).pop(),
+            ),
+            TextButton(
+              child: const Text('Zamów'),
+              onPressed: () async {
+                final ilosc = double.tryParse(controller.text.replaceAll(',', '.')) ?? 0;
+                if (ilosc <= 0 || ilosc > produkt.stan) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Nieprawidłowa ilość.')));
+                  }
+                  return;
+                }
+
+                final now = DateTime.now();
+                final login = user.email!.split('@').first;
+                final fileName = 'zamowienie_${login}_${now.toIso8601String().replaceAll(':', '-')}.csv';
+
+                final rows = [
+                  ['Kod', 'Ilość (m²)'],
+                  [produkt.kod, ilosc.toStringAsFixed(2).replaceAll('.', ',')],
+                ];
+
+                final csvData = const ListToCsvConverter(fieldDelimiter: ';').convert(rows);
+                final directory = await getApplicationDocumentsDirectory();
+                final path = '${directory.path}/$fileName';
+                final file = File(path);
+                await file.writeAsString(csvData);
+
+                await sendEmailWithAttachment(
+                  recipient: 'biuro@twojafirma.pl',
+                  subject: 'Zamówienie od $login',
+                  body: 'W załączniku znajduje się plik z zamówieniem z dnia ${now.toLocal().toString().split('.')[0]}.',
+                  attachmentPath: path,
+                  onSuccess: () {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Zamówienie wysłane!')));
+                      Navigator.of(dialogContext).pop();
+                    }
+                  },
+                  onError: () {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Błąd wysyłania zamówienia.')));
+                    }
+                  },
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> sendEmailWithAttachment({
+    required String recipient,
+    required String subject,
+    required String body,
+    required String attachmentPath,
+    required VoidCallback onSuccess,
+    required VoidCallback onError,
+  }) async {
+    const username = 'twojlogin@gmail.com';
+    const password = 'twoje_haslo_aplikacji'; // Zastąp hasłem aplikacji Gmail
+    final smtpServer = gmail(username, password);
+
+    final message = Message()
+      ..from = Address(username, 'Twoja Apka')
+      ..recipients.add(recipient)
+      ..subject = subject
+      ..text = body
+      ..attachments.add(FileAttachment(File(attachmentPath)));
+
+    try {
+      final sendReport = await send(message, smtpServer);
+      logger.i('Wysłano: $sendReport');
+      onSuccess();
+    } catch (e) {
+      logger.e('Błąd przy wysyłaniu e-maila: $e');
+      onError();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -329,14 +447,19 @@ class _ProductListPageState extends State<ProductListPage> {
                               if (stock.isNaN) {
                                 logger.w('Błąd parsowania stock dla produktu ${product[1]}');
                               }
+                              final produkt = Produkt(
+                                nazwa: product[1]?.toString() ?? 'Brak nazwy',
+                                kod: product[2]?.toString() ?? '',
+                                stan: stock,
+                              );
                               return Card(
                                 margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                 child: ListTile(
                                   title: Text(
-                                    product[1]?.toString() ?? 'Brak nazwy',
+                                    produkt.nazwa,
                                     style: const TextStyle(fontWeight: FontWeight.bold),
                                   ),
-                                  subtitle: Text('Kod: ${product[2]} | Cennik: ${product[3]}'),
+                                  subtitle: Text('Kod: ${produkt.kod} | Cennik: ${product[3]}'),
                                   trailing: Column(
                                     mainAxisAlignment: MainAxisAlignment.center,
                                     children: [
@@ -349,7 +472,7 @@ class _ProductListPageState extends State<ProductListPage> {
                                         ),
                                       ),
                                       Text(
-                                        stock > 0 ? 'Stan: ${product[5]} m²' : 'Chwilowo brak',
+                                        stock > 0 ? 'Stan: ${produkt.stan.toStringAsFixed(2)} m²' : 'Chwilowo brak',
                                         style: const TextStyle(
                                           color: Colors.green,
                                           fontSize: 16,
@@ -358,6 +481,7 @@ class _ProductListPageState extends State<ProductListPage> {
                                       ),
                                     ],
                                   ),
+                                  onTap: () => zamowProdukt(context, produkt),
                                 ),
                               );
                             },
