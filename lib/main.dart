@@ -1,139 +1,142 @@
-import 'dart:io';
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:csv/csv.dart';
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:logger/logger.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:mailer/mailer.dart';
-import 'package:mailer/smtp_server.dart';
-import 'firebase_options.dart'; // Wygenerowany przez flutterfire configure
-
-final logger = Logger();
+import 'firebase_options.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const MyApp());
+}
+
+class Product {
+  final String code, name, priceList;
+  final double quantity;
+  Product({
+    required this.code,
+    required this.name,
+    required this.priceList,
+    required this.quantity,
+  });
+}
+
+class CartItem {
+  final Product product;
+  double quantity;
+  CartItem({required this.product, required this.quantity});
 }
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Moja Aplikacja',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: const AuthWrapper(),
+      title: 'Aplikacja Produktowa',
+      theme: ThemeData(primarySwatch: Colors.purple),
+      home: const AuthGate(),
     );
   }
 }
 
-class AuthWrapper extends StatelessWidget {
-  const AuthWrapper({super.key});
-
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      builder: (ctx, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
-        if (snapshot.hasData) {
-          User? user = snapshot.data;
-          if (user != null && user.emailVerified) {
-            return const ProductListPage();
-          } else {
-            return const LoginScreen();
-          }
+        if (snap.hasData && snap.data!.emailVerified) {
+          return const ProductListPage();
         }
-        return const LoginScreen();
+        return const LoginPage();
       },
     );
   }
 }
 
-class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
-
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
   @override
-  State<LoginScreen> createState() => _LoginScreenState();
+  State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
-  String? _errorMessage;
+class _LoginPageState extends State<LoginPage> {
+  final emailCtrl = TextEditingController();
+  final passCtrl = TextEditingController();
+  bool loading = false;
+  String error = '';
 
-  Future<void> _signIn() async {
-    if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
-      setState(() => _errorMessage = 'Wypełnij wszystkie pola.');
-      return;
-    }
+  Future<void> login() async {
+    setState(() {
+      loading = true;
+      error = '';
+    });
     try {
-      UserCredential userCredential = await FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text.trim(),
+      final res = await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: emailCtrl.text.trim(),
+        password: passCtrl.text.trim(),
       );
-      if (!userCredential.user!.emailVerified) {
-        await userCredential.user!.sendEmailVerification();
-        setState(() {
-          _errorMessage = 'Proszę zweryfikować email. Wysłano link weryfikacyjny.';
-        });
+      if (!res.user!.emailVerified) {
+        await res.user!.sendEmailVerification();
+        error = 'Potwierdź email – wysłano link.';
         await FirebaseAuth.instance.signOut();
       }
-    } catch (e) {
-      setState(() {
-        _errorMessage = 'Błąd logowania: ${e.toString()}';
-      });
+    } on FirebaseAuthException catch (e) {
+      error = e.message ?? 'Błąd logowania';
+    } catch (_) {
+      error = 'Nieoczekiwany błąd.';
     }
+    if (!mounted) return;
+    setState(() => loading = false);
   }
 
   @override
   void dispose() {
-    _emailController.dispose();
-    _passwordController.dispose();
+    emailCtrl.dispose();
+    passCtrl.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext ctx) {
     return Scaffold(
       appBar: AppBar(title: const Text('Logowanie')),
       body: Padding(
-        padding: const EdgeInsets.all(16.0),
+        padding: const EdgeInsets.all(24),
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
             TextField(
-              controller: _emailController,
+              controller: emailCtrl,
               decoration: const InputDecoration(labelText: 'Email'),
-              keyboardType: TextInputType.emailAddress,
-            ),
-            TextField(
-              controller: _passwordController,
-              decoration: const InputDecoration(labelText: 'Hasło'),
-              obscureText: true,
             ),
             const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _signIn,
-              child: const Text('Zaloguj się'),
+            TextField(
+              controller: passCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'Hasło'),
             ),
-            if (_errorMessage != null)
+            const SizedBox(height: 24),
+            if (error.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.only(top: 16.0),
-                child: Text(
-                  _errorMessage!,
-                  style: const TextStyle(color: Colors.red),
-                ),
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Text(error, style: const TextStyle(color: Colors.red)),
               ),
+            loading
+                ? const CircularProgressIndicator()
+                : ElevatedButton(
+                    onPressed: login,
+                    child: const Text('Zaloguj się'),
+                  ),
           ],
         ),
       ),
@@ -141,353 +144,727 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-class Produkt {
-  final String nazwa;
-  final String kod;
-  final double stan;
-
-  Produkt({required this.nazwa, required this.kod, required this.stan});
-}
-
 class ProductListPage extends StatefulWidget {
   const ProductListPage({super.key});
-
   @override
   State<ProductListPage> createState() => _ProductListPageState();
 }
 
-class _ProductListPageState extends State<ProductListPage> {
-  final List<List<dynamic>> _products = [];
-  final List<List<dynamic>> _filteredProducts = [];
-  bool _isLoading = true;
-  bool _sortAscending = true;
-  int _sortColumnIndex = 3; // Sortowanie po kolumnie Cennik
-  String _searchQuery = '';
-  String? _selectedCennik;
-  final List<String> _cennikOptions = [];
-  String? _errorMessage;
+class _ProductListPageState extends State<ProductListPage>
+    with WidgetsBindingObserver {
+  final List<Product> products = [];
+  List<Product> filtered = [];
+  final List<CartItem> cart = [];
+  bool loading = true, sending = false;
+  String? errorMsg;
+  final searchCtrl = TextEditingController();
 
-  final String csvUrl =
+  // Filtrowanie po cenniku
+  List<String> priceLists = const [];
+  String selectedPriceList = 'Wszystkie';
+
+  // Auto-wylogowanie
+  static const Duration kInactivityTimeout = Duration(minutes: 5);
+  Timer? _idleTimer;
+
+  final csvUrl =
       'https://docs.google.com/spreadsheets/d/e/2PACX-1vRIATYDK0VLRsdhiwcDSl85TQZNsWPzeT7ap4S89dPyh-X_xZtBFy9ASEGXCbbsZrEGQeahN-66VpDX/pub?output=csv';
 
   @override
   void initState() {
     super.initState();
-    _loadCachedData();
-    _fetchCsvData();
-  }
-
-  Future<void> _loadCachedData() async {
-    final prefs = await SharedPreferences.getInstance();
-    final cachedData = prefs.getString('cached_products');
-    if (cachedData != null) {
-      final csvBody = const CsvToListConverter().convert(cachedData);
-      _processCsvData(csvBody);
-    }
-  }
-
-  Future<void> _fetchCsvData({int limit = 100}) async {
-    setState(() => _isLoading = true);
-    try {
-      final response = await http.get(Uri.parse(csvUrl)).timeout(
-        const Duration(seconds: 10),
-        onTimeout: () => throw Exception('Przekroczono czas oczekiwania na odpowiedź serwera'),
-      );
-      if (response.statusCode == 200) {
-        final csvBody = const CsvToListConverter().convert(utf8.decode(response.bodyBytes))
-            .sublist(1)
-            .take(limit)
-            .toList();
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('cached_products', response.body);
-        _processCsvData(csvBody);
-      } else {
-        throw Exception('Błąd pobierania danych: ${response.statusCode}');
-      }
-    } catch (e) {
-      setState(() {
-        _errorMessage = 'Błąd: ${e.toString()}';
-      });
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  void _processCsvData(List<List<dynamic>> csvBody) {
-    if (mounted) {
-      setState(() {
-        _products.clear();
-        _products.addAll(csvBody);
-        _filteredProducts.clear();
-        _filteredProducts.addAll(_products);
-        _cennikOptions.clear();
-        _cennikOptions.addAll(_products.map((p) => p[3]?.toString() ?? '').toSet());
-        _sortProducts(_sortColumnIndex);
-        _applyFiltersAndSearch();
-      });
-    }
-  }
-
-  void _sortProducts(int columnIndex) {
-    setState(() {
-      _sortColumnIndex = columnIndex;
-      _filteredProducts.sort((a, b) {
-        final valueA = a[columnIndex]?.toString() ?? '';
-        final valueB = b[columnIndex]?.toString() ?? '';
-        return _sortAscending ? valueA.compareTo(valueB) : valueB.compareTo(valueA);
-      });
+    fetchProducts();
+    searchCtrl.addListener(() {
+      filterProducts();
+      _resetIdleTimer();
     });
+    WidgetsBinding.instance.addObserver(this);
+    _startIdleTimer();
   }
 
-  void _applyFiltersAndSearch() {
-    setState(() {
-      _filteredProducts.clear();
-      _filteredProducts.addAll(_products.where((product) {
-        final matchesCennik = _selectedCennik == null || product[3]?.toString() == _selectedCennik;
-        final matchesSearch = _searchQuery.isEmpty ||
-            (product[1]?.toString().toLowerCase().contains(_searchQuery.toLowerCase()) ?? false) ||
-            (product[3]?.toString().toLowerCase().contains(_searchQuery.toLowerCase()) ?? false);
-        return matchesCennik && matchesSearch;
-      }));
-      _sortProducts(_sortColumnIndex);
-    });
-  }
-
-  void zamowProdukt(BuildContext context, Produkt produkt) async {
-    final controller = TextEditingController();
-    final user = FirebaseAuth.instance.currentUser;
-
-    if (user == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Zaloguj się, aby złożyć zamówienie.')));
-      return;
-    }
-
-    await showDialog(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, setDialogState) => AlertDialog(
-          title: Text('Zamów: ${produkt.nazwa}'),
-          content: TextField(
-            controller: controller,
-            keyboardType: TextInputType.numberWithOptions(decimal: true),
-            decoration: InputDecoration(labelText: 'Ilość (max: ${produkt.stan.toStringAsFixed(2)} m²)'),
-            onChanged: (value) => setDialogState(() {}),
-          ),
-          actions: [
-            TextButton(
-              child: const Text('Anuluj'),
-              onPressed: () => Navigator.of(dialogContext).pop(),
-            ),
-            TextButton(
-              child: const Text('Zamów'),
-              onPressed: () async {
-                final ilosc = double.tryParse(controller.text.replaceAll(',', '.')) ?? 0;
-                if (ilosc <= 0 || ilosc > produkt.stan) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Nieprawidłowa ilość.')));
-                  }
-                  return;
-                }
-
-                final now = DateTime.now();
-                final login = user.email!.split('@').first;
-                final fileName = 'zamowienie_${login}_${now.toIso8601String().replaceAll(':', '-')}.csv';
-
-                final rows = [
-                  ['Kod', 'Ilość (m²)'],
-                  [produkt.kod, ilosc.toStringAsFixed(2).replaceAll('.', ',')],
-                ];
-
-                final csvData = const ListToCsvConverter(fieldDelimiter: ';').convert(rows);
-                final directory = await getApplicationDocumentsDirectory();
-                final path = '${directory.path}/$fileName';
-                final file = File(path);
-                await file.writeAsString(csvData);
-
-                await sendEmailWithAttachment(
-                  recipient: 'biuro@twojafirma.pl',
-                  subject: 'Zamówienie od $login',
-                  body: 'W załączniku znajduje się plik z zamówieniem z dnia ${now.toLocal().toString().split('.')[0]}.',
-                  attachmentPath: path,
-                  onSuccess: () {
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Zamówienie wysłane!')));
-                      Navigator.of(dialogContext).pop();
-                    }
-                  },
-                  onError: () {
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Błąd wysyłania zamówienia.')));
-                    }
-                  },
-                );
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> sendEmailWithAttachment({
-    required String recipient,
-    required String subject,
-    required String body,
-    required String attachmentPath,
-    required VoidCallback onSuccess,
-    required VoidCallback onError,
-  }) async {
-    const username = 'paulina.jarmuzek.fachowiec@gmail.com';
-    const password = 'upvmohztwbdnflhp'; // Zastąp hasłem aplikacji Gmail
-    final smtpServer = gmail(username, password);
-
-    final message = Message()
-      ..from = Address(username, 'Twoja Apka')
-      ..recipients.add(recipient)
-      ..subject = subject
-      ..text = body
-      ..attachments.add(FileAttachment(File(attachmentPath)));
-
-    try {
-      final sendReport = await send(message, smtpServer);
-      logger.i('Wysłano: $sendReport');
-      onSuccess();
-    } catch (e) {
-      logger.e('Błąd przy wysyłaniu e-maila: $e');
-      onError();
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _cancelIdleTimer();
+    } else if (state == AppLifecycleState.resumed) {
+      _startIdleTimer();
     }
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Lista Produktów'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              await FirebaseAuth.instance.signOut();
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.remove('cached_products');
-              if (mounted) setState(() {});
-            },
-            tooltip: 'Wyloguj się',
+  void dispose() {
+    searchCtrl.dispose();
+    _cancelIdleTimer();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // ====== AUTOLOGOUT ======
+  void _startIdleTimer() {
+    _cancelIdleTimer();
+    _idleTimer = Timer(kInactivityTimeout, _onIdleTimeout);
+  }
+
+  void _resetIdleTimer() {
+    if (!mounted) return;
+    _startIdleTimer();
+  }
+
+  void _cancelIdleTimer() {
+    _idleTimer?.cancel();
+    _idleTimer = null;
+  }
+
+  Future<void> _onIdleTimeout() async {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Brak aktywności – nastąpiło wylogowanie'),
+        ),
+      );
+    }
+    await FirebaseAuth.instance.signOut();
+  }
+
+  // ====== DANE ======
+  Future<void> fetchProducts() async {
+    setState(() {
+      loading = true;
+      errorMsg = null;
+    });
+    try {
+      final resp = await http.get(Uri.parse(csvUrl));
+      if (resp.statusCode != 200) throw 'HTTP ${resp.statusCode}';
+      final str = utf8.decode(resp.bodyBytes);
+      final rows = const CsvToListConverter().convert(str);
+
+      products.clear();
+      for (var row in rows.skip(1)) {
+        final qStr = row[5]?.toString().replaceAll(',', '.') ?? '0';
+        products.add(
+          Product(
+            code: row[0]?.toString() ?? '',
+            name: row[1]?.toString() ?? '',
+            priceList: row[3]?.toString() ?? '',
+            quantity: double.tryParse(qStr) ?? 0,
           ),
-          IconButton(
-            icon: Icon(_sortAscending ? Icons.arrow_upward : Icons.arrow_downward),
+        );
+      }
+
+      // zbuduj listę cenników
+      final setPL = <String>{};
+      for (final p in products) {
+        if (p.priceList.trim().isNotEmpty) setPL.add(p.priceList.trim());
+      }
+      final lists = setPL.toList()..sort();
+      priceLists = ['Wszystkie', ...lists];
+
+      filterProducts();
+    } catch (e) {
+      errorMsg = e.toString();
+    }
+    if (!mounted) return;
+    setState(() => loading = false);
+  }
+
+  void filterProducts() {
+    final q = searchCtrl.text.toLowerCase().trim();
+    final byText = products.where(
+      (p) =>
+          p.name.toLowerCase().contains(q) || p.code.toLowerCase().contains(q),
+    );
+
+    List<Product> byList;
+    if (selectedPriceList == 'Wszystkie') {
+      byList = byText.toList();
+    } else {
+      byList = byText
+          .where((p) => p.priceList.trim() == selectedPriceList)
+          .toList();
+    }
+
+    setState(() => filtered = byList);
+  }
+
+  void addToCart(Product p) {
+    _resetIdleTimer();
+    final ctrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Zamów: ${p.name}'),
+        content: TextField(
+          controller: ctrl,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: InputDecoration(labelText: 'Ilość (max ${p.quantity})'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Anuluj'),
+          ),
+          TextButton(
             onPressed: () {
-              setState(() {
-                _sortAscending = !_sortAscending;
-                _sortProducts(_sortColumnIndex);
-              });
+              final val = double.tryParse(ctrl.text.replaceAll(',', '.')) ?? 0;
+              if (val > 0 && val <= p.quantity) {
+                setState(() {
+                  final idx = cart.indexWhere((c) => c.product.code == p.code);
+                  if (idx >= 0) {
+                    final newQty = cart[idx].quantity + val;
+                    if (newQty <= p.quantity) {
+                      cart[idx].quantity = newQty;
+                    } else {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'Maksymalnie ${p.quantity.toStringAsFixed(2)}',
+                          ),
+                        ),
+                      );
+                    }
+                  } else {
+                    cart.add(CartItem(product: p, quantity: val));
+                  }
+                });
+                Navigator.pop(context);
+                if (!mounted) return;
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text('Dodano ${p.name}')));
+              } else {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Niepoprawna ilość')),
+                );
+              }
             },
-            tooltip: 'Zmień kierunek sortowania',
+            child: const Text('Dodaj'),
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _fetchCsvData,
-        tooltip: 'Odśwież dane',
-        child: const Icon(Icons.refresh),
+    );
+  }
+
+  // ====== PODGLĄD KOSZYKA (edycja, usuwanie, podgląd CSV) ======
+  void showCartPreview() {
+    if (cart.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Koszyk jest pusty')));
+      return;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: TextField(
-              decoration: const InputDecoration(
-                labelText: 'Wyszukaj (Nazwa lub Cennik)',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.search),
-              ),
-              onChanged: (value) {
-                _searchQuery = value;
-                _applyFiltersAndSearch();
-              },
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8.0),
-            child: DropdownButton<String>(
-              hint: const Text('Wybierz Cennik'),
-              value: _selectedCennik,
-              isExpanded: true,
-              items: [
-                const DropdownMenuItem<String>(
-                  value: null,
-                  child: Text('Wszystkie'),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            final totalLines = cart.length;
+            final totalQty = cart.fold<double>(0, (s, c) => s + c.quantity);
+
+            final csvPreviewLines = [
+              'Symbol;Ilość',
+              ...cart
+                  .take(5)
+                  .map(
+                    (c) =>
+                        '${c.product.code};${c.quantity.toString().replaceAll('.', ',')}',
+                  ),
+            ];
+            final csvPreview =
+                csvPreviewLines.join('\n') + (cart.length > 5 ? '\n…' : '');
+
+            void increment(CartItem item) {
+              final maxQty = item.product.quantity;
+              final newQty = item.quantity + 1;
+              if (newQty <= maxQty) {
+                setState(() => item.quantity = newQty);
+                setLocal(() {});
+                _resetIdleTimer();
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      'Przekroczono dostępny stan (${maxQty.toStringAsFixed(2)})',
+                    ),
+                  ),
+                );
+              }
+            }
+
+            void decrement(CartItem item) {
+              final newQty = item.quantity - 1;
+              if (newQty > 0) {
+                setState(() => item.quantity = newQty);
+              } else {
+                setState(
+                  () => cart.removeWhere(
+                    (c) => c.product.code == item.product.code,
+                  ),
+                );
+              }
+              setLocal(() {});
+              _resetIdleTimer();
+            }
+
+            void editQty(CartItem item, String text) {
+              final v = double.tryParse(text.replaceAll(',', '.'));
+              if (v == null || v <= 0) return;
+              if (v > item.product.quantity) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      'Maksymalnie ${item.product.quantity.toStringAsFixed(2)}',
+                    ),
+                  ),
+                );
+                return;
+              }
+              setState(() => item.quantity = v);
+              setLocal(() {});
+              _resetIdleTimer();
+            }
+
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 12,
+                  right: 12,
+                  top: 12,
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 12,
                 ),
-                ..._cennikOptions.map((cennik) => DropdownMenuItem<String>(
-                      value: cennik,
-                      child: Text(cennik),
-                    )),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 4,
+                      margin: const EdgeInsets.only(bottom: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.black26,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const Text(
+                      'Koszyk',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
+                    Flexible(
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: cart.length,
+                        separatorBuilder: (context, i) =>
+                            const Divider(height: 1),
+                        itemBuilder: (context, i) {
+                          final item = cart[i];
+                          return ListTile(
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                            ),
+                            title: Text(
+                              item.product.name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            subtitle: Text(
+                              'Kod: ${item.product.code}  |  Stan: ${item.product.quantity.toStringAsFixed(2)}',
+                            ),
+                            trailing: SizedBox(
+                              width: 220,
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.remove_circle_outline,
+                                    ),
+                                    onPressed: () => decrement(item),
+                                    tooltip: 'Zmniejsz',
+                                  ),
+                                  SizedBox(
+                                    width: 76,
+                                    child: TextField(
+                                      textAlign: TextAlign.center,
+                                      controller: TextEditingController(
+                                        text: item.quantity.toStringAsFixed(2),
+                                      ),
+                                      keyboardType:
+                                          const TextInputType.numberWithOptions(
+                                            decimal: true,
+                                          ),
+                                      onSubmitted: (t) => editQty(item, t),
+                                      decoration: const InputDecoration(
+                                        isDense: true,
+                                        contentPadding: EdgeInsets.symmetric(
+                                          vertical: 6,
+                                          horizontal: 6,
+                                        ),
+                                        border: OutlineInputBorder(),
+                                      ),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.add_circle_outline),
+                                    onPressed: () => increment(item),
+                                    tooltip: 'Zwiększ',
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline),
+                                    onPressed: () {
+                                      setState(() => cart.removeAt(i));
+                                      setLocal(() {});
+                                      _resetIdleTimer();
+                                    },
+                                    tooltip: 'Usuń z koszyka',
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Pozycji: $totalLines'),
+                              Text(
+                                'Suma ilości: ${totalQty.toStringAsFixed(2)}',
+                              ),
+                            ],
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: cart.isEmpty
+                              ? null
+                              : () {
+                                  setState(() => cart.clear());
+                                  setLocal(() {});
+                                  _resetIdleTimer();
+                                },
+                          icon: const Icon(Icons.clear_all),
+                          label: const Text('Wyczyść koszyk'),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Podgląd CSV:',
+                        style: TextStyle(
+                          color: Colors.grey.shade700,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(8),
+                      margin: const EdgeInsets.only(top: 6, bottom: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        border: Border.all(color: Colors.grey.shade300),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Text(
+                          csvPreview,
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () => Navigator.pop(ctx),
+                            icon: const Icon(Icons.close),
+                            label: const Text('Zamknij'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: sending
+                                ? null
+                                : () async {
+                                    Navigator.pop(ctx);
+                                    _resetIdleTimer();
+                                    await sendOrder();
+                                  },
+                            icon: const Icon(Icons.send),
+                            label: const Text('Wyślij zamówienie'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> sendOrder() async {
+    if (cart.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Koszyk pusty')));
+      return;
+    }
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    setState(() => sending = true);
+
+    final now = DateTime.now();
+    final fname =
+        'zamowienie_${user.email!.split('@')[0]}_${now.toIso8601String().replaceAll(':', '-')}.csv';
+    final data = [
+      ['Symbol', 'Ilość'],
+      ...cart.map(
+        (c) => [c.product.code, c.quantity.toString().replaceAll('.', ',')],
+      ),
+    ];
+    final csvStr = const ListToCsvConverter(fieldDelimiter: ';').convert(data);
+
+    final url = Uri.parse(
+      'https://us-central1-produkty-logowanie.cloudfunctions.net/sendOrderEmail',
+    );
+    try {
+      final resp = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'recipientEmail': 'marcinfranczak@o2.pl',
+          'subject': 'Zamówienie od ${user.email}',
+          'csvData': csvStr,
+          'fileName': fname,
+        }),
+      );
+      if (resp.statusCode == 200) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Zamówienie wysłane')));
+        setState(() => cart.clear());
+      } else {
+        throw 'HTTP ${resp.statusCode}';
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Błąd: $e')));
+    }
+    if (!mounted) return;
+    setState(() => sending = false);
+  }
+
+  @override
+  Widget build(BuildContext ctx) {
+    return Listener(
+      onPointerDown: (_) => _resetIdleTimer(),
+      onPointerSignal: (_) => _resetIdleTimer(),
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Lista Produktów'),
+          actions: [
+            // Koszyk
+            Stack(
+              alignment: Alignment.center,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.shopping_cart),
+                  onPressed: sending ? null : showCartPreview,
+                  tooltip: 'Podgląd koszyka',
+                ),
+                if (cart.isNotEmpty)
+                  Positioned(
+                    right: 8,
+                    top: 8,
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(
+                        color: Colors.red,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      constraints: const BoxConstraints(
+                        minWidth: 16,
+                        minHeight: 16,
+                      ),
+                      child: Text(
+                        cart.length.toString(),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                        ),
+                      ),
+                    ),
+                  ),
+                if (sending)
+                  const Padding(
+                    padding: EdgeInsets.all(8),
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        color: Colors.white,
+                        strokeWidth: 2,
+                      ),
+                    ),
+                  ),
               ],
-              onChanged: (value) {
-                _selectedCennik = value;
-                _applyFiltersAndSearch();
+            ),
+            IconButton(
+              icon: const Icon(Icons.logout),
+              onPressed: () async {
+                await FirebaseAuth.instance.signOut();
               },
             ),
-          ),
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _errorMessage != null
-                    ? Center(child: Text(_errorMessage!))
-                    : _filteredProducts.isEmpty
-                        ? const Center(child: Text('Brak produktów do wyświetlenia'))
-                        : ListView.separated(
-                            itemCount: _filteredProducts.length,
-                            separatorBuilder: (context, index) => const Divider(),
-                            itemBuilder: (context, index) {
-                              final product = _filteredProducts[index];
-                              final stockString = product[5]?.toString() ?? '0';
-                              final stock = double.tryParse(stockString.replaceAll(',', '.')) ?? 0;
-                              if (stock.isNaN) {
-                                logger.w('Błąd parsowania stock dla produktu ${product[1]}');
-                              }
-                              final produkt = Produkt(
-                                nazwa: product[1]?.toString() ?? 'Brak nazwy',
-                                kod: product[2]?.toString() ?? '',
-                                stan: stock,
-                              );
+          ],
+        ),
+        body: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: TextField(
+                      controller: searchCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Szukaj (nazwa lub kod)',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (_) => _resetIdleTimer(),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: InputDecorator(
+                      decoration: const InputDecoration(
+                        labelText: 'Cennik',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          isExpanded: true,
+                          value: selectedPriceList,
+                          items: priceLists
+                              .map(
+                                (pl) => DropdownMenuItem<String>(
+                                  value: pl,
+                                  child: Text(
+                                    pl.isEmpty ? '(brak)' : pl,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: (val) {
+                            if (val == null) return;
+                            setState(() => selectedPriceList = val);
+                            filterProducts();
+                            _resetIdleTimer();
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: loading
+                  ? const Center(child: CircularProgressIndicator())
+                  : (errorMsg != null
+                        ? Center(
+                            child: Text(
+                              errorMsg!,
+                              style: const TextStyle(color: Colors.red),
+                            ),
+                          )
+                        : filtered.isEmpty
+                        ? const Center(child: Text('Brak produktów'))
+                        : ListView.builder(
+                            itemCount: filtered.length,
+                            itemBuilder: (context, i) {
+                              final p = filtered[i];
                               return Card(
-                                margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                margin: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
                                 child: ListTile(
                                   title: Text(
-                                    produkt.nazwa,
-                                    style: const TextStyle(fontWeight: FontWeight.bold),
+                                    p.name,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
-                                  subtitle: Text('Kod: ${produkt.kod} | Cennik: ${product[3]}'),
-                                  trailing: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Text(
-                                        'ID: ${product[0]}',
-                                        style: const TextStyle(
-                                          color: Colors.green,
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      Text(
-                                        stock > 0 ? 'Stan: ${produkt.stan.toStringAsFixed(2)} m²' : 'Chwilowo brak',
-                                        style: const TextStyle(
-                                          color: Colors.green,
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ],
+                                  subtitle: Text(
+                                    'Kod: ${p.code} | Cennik: ${p.priceList}',
                                   ),
-                                  onTap: () => zamowProdukt(context, produkt),
+                                  trailing: Text(
+                                    'Stan: ${p.quantity.toStringAsFixed(2)}',
+                                    style: TextStyle(
+                                      color: p.quantity > 0
+                                          ? Colors.green
+                                          : Colors.red,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  onTap: p.quantity > 0
+                                      ? () => addToCart(p)
+                                      : null,
                                 ),
                               );
                             },
-                          ),
-          ),
-        ],
+                          )),
+            ),
+          ],
+        ),
+        floatingActionButton: FloatingActionButton(
+          onPressed: loading
+              ? null
+              : () {
+                  _resetIdleTimer();
+                  fetchProducts();
+                },
+          child: const Icon(Icons.refresh),
+        ),
       ),
     );
   }
